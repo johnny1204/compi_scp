@@ -1,0 +1,4 @@
+**/*.csv
+**/*.zip
+config.ini
+.DS_Store
