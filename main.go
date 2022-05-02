@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +56,16 @@ func main() {
 	}
 
 	execLogin(page, config.Email, config.Pass)
+
+	if err := page.Navigate("https://p.nikkansports.com/goku-uma/member/compi/compi_list.zpl"); err != nil {
+		log.Fatalf("Failed to compi page:%v", err)
+	}
+
+	dom := getCurrentDom(page)
+	dom.Find("#compiArea > ol > li:nth-child(1) > a").Each(func(idx int, s *goquery.Selection) {
+		href, _ := s.Attr("href")
+		compi(page, "https://p.nikkansports.com/goku-uma/member/compi/"+href)
+	})
 }
 
 func execLogin(page *agouti.Page, id string, password string) *agouti.Page {
@@ -79,6 +92,102 @@ func execLogin(page *agouti.Page, id string, password string) *agouti.Page {
 	fmt.Println("login success")
 
 	return page
+}
+
+// コンピページ
+func compi(page *agouti.Page, targetUrl string) {
+	if err := page.Navigate(targetUrl); err != nil {
+		log.Fatalf("Failed to compi page:%v", err)
+	}
+
+	fmt.Println("visit " + targetUrl)
+	time.Sleep(3 * time.Second)
+
+	contentsDom := getCurrentDom(page)
+	// listDom := contentsDom.Find("#bySchedule > ul.dateList")
+	// listLen := listDom.Length()
+
+	var records = []map[int]string{}
+	// for i := 1; i <= listLen; i++ {
+	// 最新取得
+	for i := 1; i <= 1; i++ {
+		// for i := 2; i <= 2; i++ {
+		is := strconv.Itoa(i)
+		contentsDom.Find("#bySchedule > ul.dateList:nth-child(" + is + ") > li > a").Each(func(idx int, s *goquery.Selection) {
+			href, _ := s.Attr("href")
+			fmt.Println(href)
+
+			records = compiDetail(page, "https://p.nikkansports.com/goku-uma/member/compi/"+href, records)
+			time.Sleep(5 * time.Second)
+		})
+	}
+
+	writeCsv(records)
+}
+
+func compiDetail(page *agouti.Page, targetUrl string, records []map[int]string) []map[int]string {
+	u, _ := url.Parse(targetUrl)
+	query := u.Query()
+
+	if err := page.Navigate(targetUrl); err != nil {
+		log.Fatalf("Failed to compi detail page:%v", err)
+	}
+
+	html, _ := page.HTML()
+	readerCurContents := strings.NewReader(html)
+	compiDom, _ := goquery.NewDocumentFromReader(readerCurContents)
+	title := compiDom.Find("#contentTit").Text()
+	raceDetail := strings.Split(title, "－")[1]
+	rn, _ := strconv.Atoi(raceDetail[0:1])
+
+	date := strings.Split(raceDetail, "回")[1][6:]
+	dateI, _ := strconv.Atoi(strings.Split(date, "日")[0])
+
+	compiDom.Find("#compiArea > table.compiTable.umabanTable > tbody > tr:nth-child(n + 2)").Each(func(idx int, coms *goquery.Selection) {
+		horse := coms.Find("td:nth-child(n + 3)")
+		var compiNum = make(map[int]string, horse.Length()+1)
+		// CSV用ID
+		raceNum := fmt.Sprintf("%02d", idx+1)
+		compiNum[0] = query.Get("date") + query.Get("course_id")[1:] + fmt.Sprintf("%02d", rn) + fmt.Sprintf("%02d", dateI) + raceNum
+		horse.Each(func(_ int, cs *goquery.Selection) {
+			var horseNum string
+			cs.Contents().Each(func(i int, s *goquery.Selection) {
+				if !s.Is("br") {
+					text := strings.TrimSpace(s.Text())
+					if text == "消" {
+						text = "0"
+					}
+
+					if i == 0 {
+						horseNum = text
+					} else {
+						n, _ := strconv.Atoi(horseNum)
+						compiNum[n] = text
+					}
+				}
+			})
+		})
+		records = append(records, compiNum)
+	})
+
+	return records
+}
+
+func writeCsv(records []map[int]string) {
+	file, _ := os.OpenFile("compi.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	defer file.Close()
+	// w := csv.NewWriter(os.Stdout)
+	w := csv.NewWriter(file)
+	for _, value := range records {
+		r := make([]string, 0, 1+len(value))
+		for i := 0; i < len(value); i++ {
+			r = append(r, value[i])
+		}
+		if err := w.Write(r); err != nil {
+			fmt.Println("error writing record to csv:", err)
+		}
+	}
+	defer w.Flush()
 }
 
 func getCurrentDom(page *agouti.Page) *goquery.Document {
